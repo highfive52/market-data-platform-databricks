@@ -964,8 +964,22 @@ Do not commit authentication configuration or credentials to the repository.
 ### 12.3 Configure the VS Code extension
 
 1. Open the Databricks extension in VS Code.
+
+``text
+Ctrl+Shift+P → View: Open View
+Select databricks
+```
+
 2. Open its configuration view.
+
+```text
+Create configuration
+```
+
 3. Select the Databricks workspace.
+
+Select the previously configure MDP profile.  Steps 4 and 5 may not be necssary.
+
 4. Choose OAuth user-to-machine authentication.
 5. Sign in to the workspace.
 6. Verify that the extension recognizes the configured workspace.
@@ -986,7 +1000,11 @@ We will manually establish the initial bundle configuration to preserve the sele
 
 ### 13.1 Create databricks.yml
 
-At the repository root:
+At the repository root (if doesn't exist):
+
+```bash
+touch databricks.yml
+```
 
 ```yaml
 bundle:
@@ -1037,62 +1055,7 @@ https://docs.databricks.com/aws/en/dev-tools/bundles/
 
 ---
 
-## 14. Create .gitignore
-
-Create `.gitignore` in the repository root:
-
-```gitignore
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-
-# Virtual environments
-.venv/
-venv/
-
-# uv
-.python-version
-
-# Testing
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-
-# Ruff
-.ruff_cache/
-
-# Environment variables and secrets
-.env
-.env.*
-!.env.example
-
-# Databricks local configuration
-.databricks/
-.bundle/
-
-# Operating system
-.DS_Store
-Thumbs.db
-
-# IDE temporary files
-.idea/
-*.swp
-*.swo
-```
-
-**Correction:** `.python-version` is project configuration and must be committed. Remove the `.python-version` ignore entry shown above before committing.
-
-The final `.gitignore` should therefore retain all entries except `.python-version`.
-
-We want the Python version to be reproducible across development machines and CI.
-
----
-
-## 15. Final Repository Structure
+## 14. Final Repository Structure
 
 After initialization, the repository should resemble:
 
@@ -1196,7 +1159,7 @@ uv run ruff format --check .
 ### pytest
 
 ```bash
-uv run pytest
+c
 ```
 
 ### pre-commit
