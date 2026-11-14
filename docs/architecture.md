@@ -188,7 +188,45 @@ The platform should not assume that similarly named fields from different provid
 
 Provider integrations should remain replaceable without requiring changes to downstream analytical contracts.
 
-## 6. Design Principles
+## 6. Databricks Implementation Architecture
+
+The Market Data Platform is implemented as a Python application deployed and executed within Databricks.
+
+The architecture separates application logic from Databricks platform resources and the development and deployment tooling used to manage them.
+
+### Development and Deployment
+
+Local development uses VS Code, Python, uv, pytest, Ruff, and pre-commit. Application code, notebooks, SQL, and Databricks resource definitions are maintained in Git.
+
+The Databricks CLI and Declarative Automation Bundles (Asset Bundles) validate and deploy the application and its associated resources to the Databricks workspace.
+
+<!-- ![Development and deployment flow](diagrams/development-deployment-flow.png) -->
+<img src="diagrams/development-deployment-flow.png"
+     alt="Development and deployment flow"
+     width="50%">
+
+### Runtime Execution
+
+Databricks Jobs orchestrate the execution of notebooks in a serverless environment. The notebooks use the deployed Python application package for reusable ingestion and transformation logic.
+
+The application produces structured records that are converted into Spark DataFrames and persisted as Delta tables governed by Unity Catalog.
+
+<!-- ![Databricks runtime and Bronze ingestion](diagrams/databricks-runtime-flow.png) -->
+<img src="diagrams/development-deployment-flow.png"
+     alt="Development and deployment flow"
+     width="50%">
+
+The initial implementation demonstrates this pattern through the Yahoo historical Bronze ingestion job. Future jobs and pipelines will extend the same architecture to Silver normalization, reconciliation, Gold analytics, and additional provider integrations.
+
+### Separation of Responsibilities
+
+The implementation maintains three distinct areas of responsibility:
+
+- **Python application:** Provider integration, data contracts, transformations, validation, and reusable domain logic.
+- **Databricks platform:** Serverless execution, Spark processing, Delta Lake storage, Unity Catalog governance, SQL access, and job orchestration.
+- **Development and deployment tooling:** Local testing, code quality, packaging, version control, resource configuration, and deployment.
+
+## 7. Design Principles
 
 - **Independent implementation:** This project is an independent Databricks implementation of the market data platform. It shares domain requirements and architectural concepts with the original MDP, but does not depend on its code, packages, infrastructure, or runtime.
 - **Databricks-native capabilities:** Prefer Databricks and Delta Lake capabilities where they provide meaningful advantages over application-managed infrastructure.

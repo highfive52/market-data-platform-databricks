@@ -1,0 +1,50 @@
+
+flowchart TD
+    subgraph LOCAL["Local Development Environment"]
+        GIT["Git Repository"]
+        SRC["src/market_data_platform<br/>Python application"]
+        NB["notebooks/<br/>Databricks notebooks"]
+        CFG["databricks.yml<br/>resources/*.yml"]
+        PY["pyproject.toml<br/>uv.lock"]
+
+        DEV["VS Code / WSL"]
+        UV["uv"]
+        TEST["pytest"]
+        LINT["Ruff / pre-commit"]
+
+        GIT --> DEV
+        DEV --> SRC
+        DEV --> NB
+        DEV --> CFG
+        DEV --> PY
+        PY --> UV
+        SRC --> TEST
+        SRC --> LINT
+        UV --> TEST
+    end
+
+    subgraph DEPLOY["Build and Deployment"]
+        CLI["Databricks CLI"]
+        VALIDATE["Bundle Validate"]
+        BUILD["uv build --wheel"]
+        WHEEL["Python Wheel"]
+        DEPLOY_BUNDLE["Bundle Deploy"]
+    end
+
+    subgraph WORKSPACE["Databricks Workspace"]
+        JOB["Databricks Job"]
+        NOTEBOOK["Deployed Notebook"]
+        ARTIFACT["Uploaded Python Wheel"]
+    end
+
+    CFG --> CLI
+    NB --> CLI
+    SRC --> BUILD
+    UV --> BUILD
+    CLI --> VALIDATE
+    VALIDATE --> DEPLOY_BUNDLE
+    BUILD --> WHEEL
+    WHEEL --> DEPLOY_BUNDLE
+    DEPLOY_BUNDLE --> JOB
+    DEPLOY_BUNDLE --> NOTEBOOK
+    DEPLOY_BUNDLE --> ARTIFACT
