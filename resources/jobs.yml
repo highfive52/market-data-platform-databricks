@@ -1,2 +1,17 @@
 resources:
-  jobs: {}
+  jobs:
+    yahoo_historical_bronze:
+      name: MDP - Yahoo Historical Bronze
+
+      tasks:
+        - task_key: run_bronze_notebook
+          notebook_task:
+            notebook_path: ../notebooks/02_bronze.py
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "5"
+            dependencies:
+              - ../dist/*.whl
