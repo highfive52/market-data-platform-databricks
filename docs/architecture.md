@@ -30,29 +30,31 @@ The principal technologies are:
 
 The initial implementation focuses on historical market data from Yahoo Finance. Subsequent stages introduce Finnhub trade data and additional ingestion patterns.
 
-The initial Yahoo Finance ingestion flow is:
+The implemented Yahoo Finance ingestion flow is:
 
 1. **Provider integration:** Python uses the `yfinance` client to retrieve historical market data for a requested date range. Provider-specific API interactions and source semantics remain the responsibility of the Python integration.
-2. **Raw source landing:** Persist the extracted observations as Parquet files in a Unity Catalog Volume. Each extraction produces uniquely identified files so that separate ingestion runs do not overwrite previously landed source data. Raw files are retained independently of Bronze processing to support replay, investigation, and reprocessing.
-3. **Incremental file ingestion:** Use Auto Loader within a Lakeflow Spark Declarative Pipeline to discover and process newly landed files. Auto Loader tracks file-processing progress through its checkpoint mechanism. It provides incremental file ingestion, not business-level deduplication of observations across different files.
-4. **Bronze:** Persist provider observations in Delta tables managed by Lakeflow. Preserve source semantics, observation identity, version information, and ingestion lineage. Apply business-level idempotency rules so repeated identical observations do not create additional versions, while changed observations are retained as separate versions. Observations should be preserved whenever they can be represented and persisted, regardless of whether their market-data values pass quality checks.
-5. **Dead-letter handling:** Capture records that cannot be represented or persisted through the normal Bronze path, retaining the available source representation and failure context wherever possible.
-6. **Data quality evaluation:** Evaluate preserved observations and processing results. Record quality findings separately from Bronze so that issues can be investigated without discarding the underlying observations.
-7. **Silver:** Normalize provider observations into canonical market data, validate them against canonical requirements, and reconcile overlapping sources. Only suitable observations are promoted; observations that fail validation remain available in Bronze with their associated findings.
-8. **Gold:** Produce analytical datasets and aggregations from trusted Silver data. Use dbt for analytical SQL models, dependencies, tests, and documentation.
-9. **Consumption:** Query analytical datasets through Databricks SQL and other analytical workloads.
+2. **Raw source landing:** The extracted observations are normalized into the platform's landing representation and written as Parquet files in a Unity Catalog Volume. Each extraction receives a unique ingestion run ID and writes to a separate directory. Raw files are retained independently of Bronze processing to support replay, investigation, and reprocessing.
+3. **Incremental file ingestion:** Auto Loader within a Lakeflow Spark Declarative Pipeline discovers and processes newly landed files. Its checkpoint/state tracks file-processing progress. Re-running the pipeline does not reprocess previously processed files, while files from a new extraction run can be discovered independently.
+4. **Bronze:** Lakeflow manages the Bronze Delta table and appends the provider-derived observations from newly discovered files. The current implementation preserves overlapping observations across extraction runs, including identical observations and observations whose values have changed. It does not yet perform business-level deduplication, content hashing, or current-version selection.
+5. **Schema handling:** Auto Loader provides schema inference and schema evolution capabilities. Separate proof-of-concept pipelines have demonstrated additive schema evolution and rescue mode. The production Yahoo Bronze pipeline currently uses Auto Loader's default schema-evolution behavior and includes a rescued-data column.
+6. **Validation:** SQL validation checks evaluate completeness, business-key duplication, OHLC plausibility, provider metadata, ingestion lineage, and reconciliation between landed Parquet files and Bronze records. These checks currently provide validation evidence; a persistent data-quality findings framework has not yet been implemented.
+7. **Silver:** The planned Silver layer will normalize provider observations into canonical market data, validate them against canonical requirements, and reconcile overlapping sources. It will also define how repeated observations and provider revisions are interpreted for downstream use.
+8. **Gold:** The planned Gold layer will produce analytical datasets and aggregations from trusted Silver data. dbt is the intended tool for analytical SQL models, dependencies, tests, and documentation.
+9. **Consumption:** Analytical datasets will be queried through Databricks SQL and other analytical workloads.
 
-The ingestion design distinguishes file-level processing guarantees from business-level idempotency. Auto Loader incrementally discovers and tracks files it has processed, but separate files may contain overlapping historical observations. Bronze processing applies the platform's observation identity and content-hash rules to distinguish identical observations from provider revisions. Repeated identical observations should not create duplicate versions; changed observations should be retained as separate versions.
+The ingestion design distinguishes file-level processing from business-level observation identity. Auto Loader incrementally discovers and tracks files it has processed. It does not deduplicate business observations across separate files. A new extraction run can contain observations whose business keys already exist in Bronze, and those observations are appended as new records.
 
-Raw source files are retained independently of Bronze tables. This provides a replayable source for reprocessing when ingestion logic, schemas, or interpretation of provider data changes. Bronze remains the persisted provider-observation layer, with its own observation versioning and ingestion lineage.
+This behavior is intentional in the current implementation: Bronze preserves successive provider observations and their ingestion-run lineage rather than selecting a definitive current observation. Identical observations and changed observations are both retained. Business-level deduplication, version selection, and reconciliation remain downstream design responsibilities.
 
-Data quality evaluation is a cross-cutting responsibility rather than a separate medallion layer. Findings may be raised during ingestion, Bronze processing, or Silver transformations. Dead-letter handling is reserved for records that cannot be persisted through the normal Bronze path; it is distinct from quality findings for observations successfully preserved in Bronze.
+Raw source files are retained independently of Bronze tables. A separate recreation experiment demonstrated that a newly deployed Lakeflow pipeline, with independent state and a new target table, could ingest all 10 records from the two existing Yahoo extraction runs without calling the provider again. This verifies that Bronze can be rebuilt from the retained raw landing data.
 
-Lakeflow Spark Declarative Pipelines manage the transformations and tables assigned to them. dbt manages its own analytical models and resulting objects. These responsibilities should remain distinct to avoid multiple tools independently managing the same table.
+Data quality evaluation is a cross-cutting responsibility rather than a separate medallion layer. The current implementation uses SQL validation queries to inspect Bronze data. A persistent findings mechanism and dead-letter handling are future capabilities. They should distinguish observations successfully preserved in Bronze from records that cannot be represented or persisted through the normal ingestion path.
 
-Lakeflow Jobs coordinate the execution of provider-ingestion, pipeline, and analytical-model tasks. Declarative Automation Bundles deploy supported resource definitions; deploying a resource does not itself execute the workload or populate its tables.
+Lakeflow Spark Declarative Pipelines manage the transformations and tables assigned to them. dbt is intended to manage its own analytical models and resulting objects. These responsibilities should remain distinct to avoid multiple tools independently managing the same table.
 
-Historical ingestion and controlled datasets are the initial focus. The first implementation will validate the Python-to-Volume-to-Auto-Loader-to-Bronze flow, including incremental processing and business-level idempotency. Additional providers and live streaming are introduced in later implementation stages.
+Lakeflow Jobs are intended to coordinate provider-ingestion, pipeline, and analytical-model tasks. The current extraction and Bronze pipeline have been executed separately during implementation; sequential orchestration is a subsequent workflow improvement. Declarative Automation Bundles deploy supported resource definitions; deploying a resource does not itself execute the workload or populate its tables.
+
+Historical ingestion and controlled datasets are the initial focus. The Yahoo implementation has validated the Python-to-Volume-to-Auto-Loader-to-Bronze flow, including incremental processing, schema experiments, validation, overlapping extraction runs, and recreation from retained raw files. Additional providers and live streaming are introduced in later implementation stages.
 
 ## 3. Data Layer Responsibilities
 
@@ -90,45 +92,48 @@ Bronze ingestion must be idempotent for identical provider observations without 
 
 #### Timestamp preservation
 
-Provider timestamps must retain enough information to identify the original market-data instant and understand how the provider represented it.
+Provider timestamps must retain enough information to identify the source's time representation and understand the semantics of the observation.
 
-For Yahoo historical bars, the source timestamp includes timezone information. Bronze will preserve:
+For Yahoo historical bars, the implementation preserves:
 
-- The provider's local timestamp as a timezone-naive timestamp.
-- The provider timezone as a separate value, such as `America/New_York`.
-- A normalized UTC timestamp, stored as a timezone-naive timestamp whose value represents UTC.
+- `provider_timestamp_local`: The provider's timestamp represented as an ISO 8601 string, including its UTC offset.
+- `provider_timezone`: The provider's IANA timezone, such as `America/New_York`.
+- `provider_timestamp_utc`: The corresponding UTC instant, stored as a Spark/Delta timestamp.
+- `bar_date`: The date derived from the provider's local timestamp.
 
-The UTC column uses an `_utc` suffix. Its values must be explicitly converted from the source instant to UTC before the timezone information is removed for storage.
+The UTC timestamp is explicitly converted from the timezone-aware provider timestamp before being stored. Spark/Delta timestamp values do not retain the original timezone identity, so the separate provider timezone and local timestamp representation are retained.
 
-This approach preserves the provider's local time context while providing a consistent UTC timestamp for keys, joins, and downstream processing.
+An important distinction applies to daily Yahoo bars: their provider timestamp is a midnight local-time date label. It should not be interpreted as the actual market close time or as the instant at which the bar became final. The `bar_date` field represents the provider's local business date.
 
-Delta timestamp columns do not retain the original timezone identity. The separate timezone field is therefore necessary to interpret the preserved local timestamp.
+#### Observation identity and ingestion history
 
-#### Observation identity and versioning
+The current Yahoo historical Bronze implementation preserves observations from each extraction run.
 
-Bronze ingestion must be idempotent for identical provider observations without discarding changes made by a provider.
+The business key used to identify a daily market bar for validation is:
 
-For Yahoo market bars, the initial business key is:
+`(symbol, provider_interval, bar_date)`
 
-`(provider, symbol, interval, provider_timestamp_utc)`
+This key identifies the market-data observation conceptually, but it is not currently enforced as a uniqueness constraint in Bronze.
 
-A content hash, calculated from the relevant provider data fields, identifies the contents of an observation for that business key.
+Each extracted record also carries:
 
-The resulting behavior is:
+- `ingestion_run_id`: Identifies the extraction run that produced the record.
+- `ingested_at_utc`: Records when the extraction process captured the record.
+- `run_id`: The run identifier represented in the landing directory and discovered by Auto Loader.
+- `raw_record`: The provider-derived row representation retained as JSON.
 
-- **New business key:** Insert the observation.
-- **Existing business key and identical content hash:** Deduplicate the observation.
-- **Existing business key and different content hash:** Retain the changed observation as a separate version.
+The current Bronze behavior is append-oriented:
 
-This means a provider correction or late-arriving revision does not overwrite the previously observed data. Both versions remain available for investigation and downstream processing.
+- A new business key is appended.
+- An identical observation arriving in a new extraction run is also appended.
+- A changed observation for an existing business key is appended as another observation.
+- Re-running the pipeline against already processed files does not append those files again.
 
-The hash should be based on a consistent, deterministic representation of the provider fields that define the observation. Missing and non-finite values must be handled consistently rather than being silently converted to zero or causing otherwise retrievable observations to be discarded. The hash is a content fingerprint, not a replacement for the business key.
+The distinction is important: Auto Loader provides incremental file processing, not business-level deduplication or provider-revision management.
 
-Bronze records also retain ingestion lineage, including the ingestion run that first captured the observation. Run-level metadata is recorded separately so ingestion attempts can be audited independently of whether they introduce new observations.
+The current implementation does not calculate a content hash, maintain an `is_current` flag, or select a definitive current version. Those responsibilities will be considered when designing downstream normalization and reconciliation.
 
-The current observation version is identified independently of its data-quality status. In particular, `is_current` indicates whether an observation is the latest version received for its business key; it does not indicate whether the observation is valid.
-
-Delta transaction history provides a record of changes to the table itself. Observation versioning provides a separate record of changes to provider data. These serve different purposes.
+Delta transaction history records changes to the table itself. Ingestion-run metadata identifies the extraction associated with an observation. These provide different forms of history and lineage.
 
 #### Bronze implementation ownership
 
@@ -295,6 +300,19 @@ Lakeflow Spark Declarative Pipelines use Auto Loader to incrementally discover a
 Auto Loader tracks file-processing progress through its checkpoint mechanism and provides incremental file ingestion and supported schema-evolution capabilities. It does not call external provider APIs or provide business-level deduplication of observations across separate files.
 
 Because historical extraction runs may contain overlapping observations, Bronze processing applies the platform's observation identity and content-hash rules. Identical observations should not create additional versions, while changed provider observations should be retained as new versions.
+
+**Schema inference and evolution**
+
+The Yahoo Bronze pipeline currently uses Auto Loader to infer the Parquet source schema and uses its default schema-evolution behavior. Lakeflow manages the pipeline's state and schema information in this implementation.
+
+Separate schema-evolution proof-of-concept pipelines have demonstrated two behaviors:
+
+- With the default additive schema-evolution behavior, a newly encountered field can be added to the inferred schema and the pipeline can process subsequent files using the evolved schema.
+- With `cloudFiles.schemaEvolutionMode = rescue`, unexpected fields are retained in the rescued-data column rather than being promoted into the table schema.
+
+The actual Yahoo Bronze table includes `_rescued_data`, and the schema-evolution experiments verified that unexpected fields can be preserved for investigation.
+
+The intended governance approach is to keep the landing contract explicit and review changes to provider data deliberately. Unexpected fields should be made observable and assessed before being incorporated into the analytical contract. Rescue mode is an available containment mechanism, not a complete dead-letter or data-quality framework.
 
 **Bronze and Silver processing**
 

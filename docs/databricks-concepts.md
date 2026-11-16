@@ -82,14 +82,23 @@ This project uses Databricks serverless compute for both notebook/job execution 
 
 Serverless compute allows Databricks to provision and manage the underlying execution infrastructure rather than requiring the project to configure and maintain traditional clusters.
 
-Two execution paths currently exist:
+The project currently uses two primary execution paths:
 
-- **Legacy Yahoo historical job:** The `yahoo_historical_bronze` job runs `notebooks/02_bronze.py` and uses the packaged Python application wheel.
-- **Bronze Auto Loader POC:** The `bronze_poc` Lakeflow Spark Declarative Pipeline runs `pipelines/bronze_poc.py` using serverless pipeline compute.
+- **Yahoo historical extraction job:** The `yahoo_historical_bronze` job runs `notebooks/07_yahoo_historical_landing.py`. It uses the packaged Python application wheel to retrieve historical data through yfinance, transform the provider records, and write Parquet files to a Unity Catalog Volume.
+- **Lakeflow pipelines:** The `bronze_yahoo_historical` pipeline uses serverless pipeline compute to run `pipelines/bronze.py`. It uses Auto Loader to incrementally ingest the landed Parquet files into a managed Bronze Delta table.
 
-The POC pipeline is configured in triggered mode. A triggered run processes available input and stops after the update completes, rather than continuously running.
+These are separate workloads with distinct responsibilities. The extraction job retrieves and lands provider data; the Lakeflow pipeline processes the landed files and manages the resulting table.
 
-The two paths are intentionally distinct. The legacy job represents the earlier application-managed ingestion approach; the POC explores Databricks-native file ingestion and pipeline-managed tables.
+The pipeline is configured in triggered mode. A triggered run processes available input and stops after the update completes, rather than continuously running.
+
+The project also contains isolated pipelines for experimentation:
+
+- `bronze_poc` demonstrates basic incremental file ingestion.
+- `schema_evolution_poc` demonstrates additive schema evolution.
+- `schema_evolution_rescue_poc` demonstrates rescued-data behavior.
+- `bronze_yahoo_historical_recreation` demonstrates rebuilding a separate Bronze table from existing raw files using independent pipeline state.
+
+These experiments use the same serverless execution model but have separate pipeline definitions and target tables.
 
 ### 4.2 Apache Spark
 
@@ -102,7 +111,7 @@ Spark supports both batch and streaming workloads:
 - **Batch processing:** Processes a bounded dataset.
 - **Structured Streaming:** Processes data incrementally as new input becomes available.
 
-The Bronze Auto Loader POC uses Structured Streaming. Its source is configured with:
+The project's Yahoo historical Bronze pipeline uses Structured Streaming. Its source is configured with:
 
 ```python
 spark.readStream.format("cloudFiles")
@@ -110,14 +119,18 @@ spark.readStream.format("cloudFiles")
 
 The `cloudFiles` source identifies Auto Loader. The pipeline reads Parquet files from a Unity Catalog Volume and returns a streaming DataFrame to Lakeflow.
 
-This separates responsibilities:
+The ingestion process separates responsibilities:
 
-- Python provider integrations retrieve and prepare source data.
-- Spark processes the data using distributed DataFrame operations.
-- Auto Loader discovers and incrementally ingests files.
-- Lakeflow manages pipeline execution and the resulting table.
+- **Python provider integration:** Retrieves historical data from Yahoo Finance and transforms it into the project's normalized data contract.
+- **Spark:** Creates DataFrames and provides the processing engine used by the ingestion and pipeline workloads.
+- **Auto Loader:** Discovers and incrementally processes newly landed files.
+- **Lakeflow:** Manages pipeline execution and the lifecycle of the declared Bronze table.
 
-The POC demonstrates that the application does not need to implement its own file-discovery loop, streaming checkpoint management, or Delta table write lifecycle for this ingestion path.
+The Python extraction job also uses Spark to create a DataFrame with an explicit schema before writing Parquet files to the Volume. This establishes the landing-file structure before Auto Loader processes those files.
+
+The pipeline does not need to implement its own file-discovery loop or manage its streaming checkpoint and table-write lifecycle. Those responsibilities are handled by Auto Loader and Lakeflow.
+
+An important distinction is that Auto Loader tracks file ingestion state, not business-level observation identity. If a new extraction run produces a different file containing an observation already present in Bronze, that observation can be appended again. Handling duplicate or changing business observations is a separate data-processing responsibility.
 
 ## 5. Lakehouse Storage and Data Management
 

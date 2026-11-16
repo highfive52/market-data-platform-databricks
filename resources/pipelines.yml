@@ -11,3 +11,51 @@ resources:
       libraries:
         - file:
             path: ../pipelines/bronze_poc.py
+
+    bronze_yahoo_historical:
+      name: MDP - Yahoo Historical Bronze
+
+      catalog: workspace
+      schema: market_data
+
+      serverless: true
+
+      libraries:
+        - file:
+            path: ../pipelines/bronze.py
+
+    schema_evolution_poc:
+      name: MDP - Schema Evolution POC
+
+      catalog: workspace
+      schema: market_data
+
+      serverless: true
+
+      libraries:
+        - file:
+            path: ../pipelines/schema_evolution_poc.py
+
+    schema_evolution_rescue_poc:
+      name: MDP - Schema Evolution Rescue POC
+
+      catalog: workspace
+      schema: market_data
+
+      serverless: true
+
+      libraries:
+        - file:
+            path: ../pipelines/schema_evolution_rescue_poc.py
+
+    bronze_yahoo_historical_recreation:
+      name: MDP - Bronze Yahoo Historical Recreation
+
+      catalog: workspace
+      schema: market_data
+
+      serverless: true
+
+      libraries:
+        - file:
+            path: ../pipelines/bronze_recreation.py

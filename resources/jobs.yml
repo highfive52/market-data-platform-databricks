@@ -4,9 +4,9 @@ resources:
       name: MDP - Yahoo Historical Bronze
 
       tasks:
-        - task_key: run_bronze_notebook
+        - task_key: run_historical_landing_notebook
           notebook_task:
-            notebook_path: ../notebooks/02_bronze.py
+            notebook_path: ../notebooks/07_yahoo_historical_landing.py
           environment_key: default
 
       environments:

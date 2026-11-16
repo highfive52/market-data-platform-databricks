@@ -129,23 +129,23 @@ bronze_df.printSchema()
 print("\nTransformed Bronze record:")
 bronze_df.show(truncate=False)
 
-# COMMAND ----------
+# # COMMAND ----------
 
-print(f"Writing {bronze_df.count()} records to {table_name}")
+# print(f"Writing {bronze_df.count()} records to {table_name}")
 
-bronze_df.write.format("delta").mode("append").saveAsTable(table_name)
+# bronze_df.write.format("delta").mode("append").saveAsTable(table_name)
 
-print("Bronze write completed.")
+# print("Bronze write completed.")
 
-print("\nPersisted Bronze record:")
-spark.sql(f"""
-    SELECT
-        symbol,
-        provider,
-        provider_interval,
-        provider_timestamp_local,
-        provider_timestamp_utc,
-        observation_hash,
-        ingestion_run_id
-    FROM {table_name}
-""").show(truncate=False)
+# print("\nPersisted Bronze record:")
+# spark.sql(f"""
+#     SELECT
+#         symbol,
+#         provider,
+#         provider_interval,
+#         provider_timestamp_local,
+#         provider_timestamp_utc,
+#         observation_hash,
+#         ingestion_run_id
+#     FROM {table_name}
+# """).show(truncate=False)

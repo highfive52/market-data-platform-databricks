@@ -1,34 +1,42 @@
 ## Current Project Status
 
-**Current stage: Stage 2 — Lakehouse Foundation and Lakeflow POC**
+**Current stage: Stage 3 — Bronze Ingestion and Historical Market Data**
 
-Stage 1 is complete. Stage 2 is in progress. The project has completed its initial Databricks environment and deployment setup, explored database object management through a custom migration implementation, and established the target approach for Databricks-native table and pipeline management.
+Stage 1 — Project Foundation and Databricks Environment — is complete.
 
-The architecture decision is to use Databricks-native capabilities for platform-managed data objects and transformations rather than introduce a separate database migration framework.
+Stage 2 — Lakehouse Foundation and Lakeflow POC — is complete. The project established its Databricks development environment, deployed resources through Declarative Automation Bundles, and demonstrated Unity Catalog Volumes, Auto Loader, Lakeflow-managed Bronze tables, and incremental file ingestion.
 
-The initial historical Yahoo Finance ingestion architecture is now defined:
+Stage 3 — Bronze Ingestion and Historical Market Data — has completed its technical implementation and verification. Documentation and final repository updates remain.
+
+The implemented historical Yahoo Finance ingestion architecture is:
 
 **Python / yfinance → Unity Catalog Volume → Auto Loader → Lakeflow Bronze**
 
-Python retrieves historical market data and writes uniquely identified Parquet files to a Unity Catalog Volume. Auto Loader, running within a Lakeflow Spark Declarative Pipeline, incrementally discovers and processes those files. Bronze processing applies the platform's observation identity, content-hash, and versioning rules.
+Python retrieves historical market data, transforms it into a normalized contract, and writes explicitly typed Parquet files to uniquely identified ingestion-run directories in a Unity Catalog Volume.
 
-This architecture separates raw source-file retention, file-level ingestion progress, and business-level observation idempotency.
+Auto Loader, running within a Lakeflow Spark Declarative Pipeline, incrementally discovers and processes newly landed files. Lakeflow manages the resulting Bronze streaming table as a managed Delta table.
 
-The next milestone is a small proof of concept that validates the Volume, Auto Loader, and Lakeflow workflow in Databricks Free Edition.
+The implementation preserves provider-derived observations, raw records, provider timestamps, and ingestion-run lineage.
 
-Some Bronze database implementation has already been completed ahead of the formal Bronze ingestion work. Historical data ingestion and Silver transformations have not yet been completed.
+An important architectural distinction has been demonstrated: Auto Loader tracks file-processing progress, not business-level observation identity. A new extraction containing overlapping observations is appended to Bronze, even when some observations are identical to previously ingested records. Business-level reconciliation and current-version selection remain downstream responsibilities.
+
+Schema evolution has also been explored through isolated pipelines. The project demonstrated both additive schema evolution and rescue mode, including the behavior of the `_rescued_data` column.
+
+Delta transaction history, time travel, file retention, and independent pipeline recreation have been investigated. A new pipeline with independent state successfully rebuilt a separate Bronze table from the retained raw Parquet files without retrieving the data from Yahoo again.
 
 | Stage | Description | Status |
 |---|---|---|
 | 1 | Project Foundation and Databricks Environment | Complete |
-| 2 | Lakehouse Foundation and Lakeflow POC | In progress |
-| 3 | Bronze Ingestion and Historical Market Data | Foundation started |
+| 2 | Lakehouse Foundation and Lakeflow POC | Complete |
+| 3 | Bronze Ingestion and Historical Market Data | Technical work complete; documentation remaining |
 | 4 | Silver Transformations and Reconciliation | Not started |
 | 5 | Gold Analytics, dbt, and Databricks SQL | Not started |
 | 6 | Orchestration and Lakeflow Jobs | Not started |
-| 7 | Incremental Ingestion and Schema Evolution | Not started |
+| 7 | Incremental Ingestion and Schema Evolution | Experiments completed in Stage 3; further work deferred |
 | 8 | Streaming Market Data | Not started |
 | 9 | Platform Engineering and Optimization | Not started |
+
+---
 
 ---
 
@@ -118,26 +126,23 @@ Current environment state:
 
 ### Verification Performed
 
-The custom migration implementation was exercised through unit tests and against the Databricks workspace.
+The Lakehouse and Lakeflow POC demonstrated:
 
-The last reported full test run included:
+- A Unity Catalog Volume used as a raw Parquet landing location.
+- Auto Loader discovering and incrementally ingesting Parquet files.
+- A Lakeflow Spark Declarative Pipeline creating and managing a Bronze streaming table.
+- Repeated pipeline execution without re-ingesting previously processed files.
+- Bundle deployment of pipeline resources.
+- Separation of bundle deployment from pipeline execution.
+- Delta table history and metadata inspection.
 
-```text
-tests/unit/test_bronze_market_data.py
-tests/unit/test_migrations.py
-tests/unit/test_project_setup.py
+The POC initially ingested four records and subsequently ingested two additional records, resulting in six records in the managed Bronze table.
 
-16 passed
-```
+Schema evolution was subsequently explored through separate experiments. The additive-evolution experiment demonstrated automatic addition of a new field, while the rescue-mode experiment demonstrated preservation of an unexpected field in `_rescued_data`.
 
-Code-quality checks also completed successfully:
+**### Completion Criteria**
 
-```bash
-uv run ruff check .
-uv run ruff format --check .
-```
-
-These results document the earlier custom implementation. They do not represent verification of the new Lakeflow architecture.
+Stage 2 is complete. The project has demonstrated the basic Databricks-native resource deployment, governed file landing, incremental ingestion, and pipeline-managed table lifecycle needed for the historical ingestion implementation.
 
 ### Architectural Decisions
 
@@ -226,56 +231,128 @@ Completed:
 
 These accomplishments establish an initial Bronze foundation, but the table's existence does not mean that the complete historical ingestion workflow has been implemented.
 
-### Target Ingestion Workflow
+### Implemented Ingestion Workflow
 
-The agreed initial ingestion path is:
+The implemented historical ingestion path is:
 
 **Python / yfinance → Unity Catalog Volume → Auto Loader → Lakeflow Bronze**
 
-1. Python retrieves historical market data for a requested date range.
-2. The extracted observations are written as Parquet files to a Unity Catalog Volume.
-3. Each extraction produces uniquely identified files so that separate runs do not overwrite previously landed data.
-4. Lakeflow uses Auto Loader to incrementally discover and ingest newly landed files.
-5. Bronze processing applies observation identity and content-hash rules to determine whether an observation is new, unchanged, or revised.
-6. Bronze Delta tables preserve provider observations, version information, and ingestion lineage.
+1. The Databricks Job executes `notebooks/07_yahoo_historical_landing.py`.
+2. The notebook retrieves historical market data through yfinance.
+3. The Python transformation normalizes the provider records and adds ingestion metadata.
+4. Spark creates a DataFrame using an explicit schema.
+5. The landing writer stores the records as Parquet files in a unique ingestion-run directory within the Unity Catalog Volume.
+6. Auto Loader discovers newly landed files.
+7. The Lakeflow pipeline processes those files into the managed Bronze streaming table.
 
-Raw source files are retained independently of Bronze tables to support replay, investigation, and reprocessing.
+The main Bronze table is:
 
-Auto Loader provides file-level processing progress. It does not deduplicate overlapping observations contained in different extraction files. Business-level idempotency and observation versioning remain explicit Bronze processing responsibilities.
+`workspace.market_data.bronze_yahoo_historical_bars`
 
-The Yahoo observation business key is:
+The landing contract preserves:
 
-`(provider, symbol, interval, provider_timestamp_utc)`
+- Provider and symbol.
+- Provider interval.
+- Local business date.
+- OHLCV and associated market fields.
+- Original provider timestamp as a local ISO-8601 string with offset.
+- Provider IANA timezone.
+- UTC-converted provider timestamp.
+- Ingestion run identifier and ingestion timestamp.
+- Original provider-derived record as JSON.
 
-The content hash distinguishes an unchanged observation from a changed provider observation with the same business key.
+For Yahoo daily data, the provider timestamp represents a midnight local date label, not the actual market close time. The separate `bar_date` field preserves the provider-local business date.
 
-- Same key and same content hash: do not create another observation version.
-- Same key and changed content hash: preserve the changed observation as a new version.
-- New key: insert a new observation.
+### Schema Evolution Experiments
 
-The `is_current` indicator identifies the latest observation version independently of its data-quality status.
+Two isolated Lakeflow pipelines were used to investigate Auto Loader schema behavior.
 
-### Remaining Work
+**Additive evolution:** The default schema-evolution behavior was demonstrated by adding a new field to subsequently landed Parquet files. The table schema evolved, and older records contained null for the new field.
 
-- Transition the Bronze table to its intended Databricks-native ownership.
-- Implement the Python historical Yahoo Finance extraction.
-- Define the raw Parquet file contract, including schema, timestamps, null and non-finite value handling, and relevant extraction metadata.
-- Establish the Unity Catalog Volume raw source landing area.
-- Implement uniquely identified extraction files and avoid overwriting prior source files.
-- Configure Auto Loader within a Lakeflow pipeline.
-- Load actual historical market data into Bronze.
-- Implement and test business-level idempotency and observation versioning.
-- Validate provider metadata and ingestion lineage.
-- Demonstrate repeatable ingestion, including overlapping historical date ranges.
-- Explore Delta transaction logs, table history, and schema enforcement.
-- Add SQL analysis and validation examples.
-- Document the Bronze data contract and ingestion behavior.
+**Rescue mode:** A separate pipeline configured with `cloudFiles.schemaEvolutionMode = rescue` preserved an unexpected field in `_rescued_data` rather than promoting it into the table schema.
+
+These experiments established that schema detection and preservation do not replace data-contract governance. Unexpected fields still require review and an explicit decision about whether to change the accepted contract.
+
+### Delta History and Time Travel
+
+The main Yahoo Bronze table's Delta history was inspected.
+
+The history showed:
+
+- Initial table creation.
+- Lakeflow pipeline setup.
+- A streaming update appending the initial six records.
+- A later streaming update appending four records from a second extraction run.
+
+Time travel was used to inspect historical table versions. File retention and log retention were investigated separately, establishing that retained transaction history does not guarantee that the underlying data files remain available.
+
+The logical Lakeflow table name is the supported interface. Internal materialization and backing-table names exposed through metadata inspection are implementation details.
+
+### Ingestion Validation
+
+SQL validation was developed and executed against the Yahoo Bronze table.
+
+Validation covered:
+
+- Record counts and distinct symbols.
+- Missing required metadata.
+- Rescued records.
+- OHLC plausibility and volume validity.
+- Provider and timestamp metadata.
+- Ingestion-run lineage.
+- Duplicate business keys across ingestion runs.
+- Reconciliation between landed Parquet records and Bronze records.
+
+The initial six-record ingestion was reconciled against its raw landing files. A subsequent overlapping extraction was also validated, demonstrating that Bronze preserves repeated business observations across distinct ingestion runs.
+
+The validation queries are maintained in:
+
+`sql/validation/bronze_yahoo_historical.sql`
+
+### Repeatability and Independent Recreation
+
+Two historical extraction runs were landed:
+
+- First run: six records.
+- Second run: four records, with overlapping business dates.
+
+The primary Bronze pipeline ingested all ten records. Re-running the pipeline without new files did not append the same files again.
+
+A separate recreation pipeline was then deployed with independent pipeline state and a new target table:
+
+`workspace.market_data.bronze_yahoo_historical_recreation`
+
+The recreation pipeline ingested all ten records from the existing raw Parquet files without calling Yahoo Finance again.
+
+This demonstrated that the pipeline-managed Bronze table can be reconstructed independently of the original pipeline state, provided the raw landing files remain available.
+
+### Architectural Boundaries
+
+The current implementation deliberately does not perform business-level deduplication or observation versioning in Bronze.
+
+It does not currently implement:
+
+- Observation content hashes.
+- `is_current` or current-version selection.
+- Business-key uniqueness enforcement.
+- A persistent dead-letter or data-quality findings framework.
+- Automated orchestration between the extraction job and Bronze pipeline.
+
+These are separate design and implementation decisions. They should not be attributed to the current Bronze ingestion workflow.
 
 ### Completion Criteria
 
-Historical market data can be loaded repeatedly into Bronze Delta tables with appropriate lineage, preservation, and validation. Repeated identical observations do not create unnecessary versions, while changed provider observations are retained. Raw source files remain available for replay and investigation.
+Stage 3's technical completion criteria have been demonstrated:
 
-The ingestion workflow and pipeline-managed table definitions can be reconstructed independently of the previous workspace.
+- Historical Yahoo market data can be extracted and landed as durable Parquet files.
+- Auto Loader incrementally ingests newly landed files.
+- Lakeflow manages the resulting Bronze Delta table.
+- Ingestion lineage and provider metadata are preserved.
+- SQL validation establishes expected record contents and source-to-Bronze reconciliation.
+- Repeated extraction runs demonstrate the distinction between file-level processing and business-level duplicates.
+- A separate pipeline can recreate a Bronze table from retained raw files without calling the provider.
+
+Remaining Stage 3 work is to finalize documentation, review the repository artifacts, and commit the completed implementation.
 
 ---
 
