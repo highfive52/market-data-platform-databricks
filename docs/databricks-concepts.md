@@ -46,8 +46,8 @@ For this project, the distinction is:
 
 | Concern | Responsibility |
 |---|---|
-| Data platform | Databricks, Spark, Unity Catalog, Delta Lake, jobs |
-| Data application | Python packages implementing ingestion, transformation, reconciliation, and analytics |
+| Data platform | Databricks, Spark, Unity Catalog, Delta Lake, Lakeflow |
+| Data application | Python packages implementing provider integrations, domain logic, and application-specific processing |
 | Development tooling | uv, pytest, Ruff, Git, Python wheels |
 | Deployment tooling | Databricks CLI and Declarative Automation Bundles |
 
@@ -78,203 +78,235 @@ Compute resources provide the processing environment for notebooks, jobs, and ot
 
 ### 4.1 Serverless Compute
 
-Serverless compute allows Databricks to provision and manage the execution environment without requiring users to configure and maintain the underlying compute infrastructure.
+This project uses Databricks serverless compute for both notebook/job execution and Lakeflow pipeline processing.
 
-Databricks manages the provisioning and lifecycle of the execution environment.
+Serverless compute allows Databricks to provision and manage the underlying execution infrastructure rather than requiring the project to configure and maintain traditional clusters.
 
-For this project, Serverless is used to execute the Yahoo historical ingestion notebook.
+Two execution paths currently exist:
 
-The job environment specifies its dependencies, including the project's Python wheel.
+- **Legacy Yahoo historical job:** The `yahoo_historical_bronze` job runs `notebooks/02_bronze.py` and uses the packaged Python application wheel.
+- **Bronze Auto Loader POC:** The `bronze_poc` Lakeflow Spark Declarative Pipeline runs `pipelines/bronze_poc.py` using serverless pipeline compute.
 
-This means the project does not need to provision or administer a traditional Spark cluster for the current development workflow.
+The POC pipeline is configured in triggered mode. A triggered run processes available input and stops after the update completes, rather than continuously running.
+
+The two paths are intentionally distinct. The legacy job represents the earlier application-managed ingestion approach; the POC explores Databricks-native file ingestion and pipeline-managed tables.
 
 ### 4.2 Apache Spark
 
-Apache Spark is a distributed data processing engine used by Databricks.
+Apache Spark provides the distributed data-processing engine used by Databricks.
 
-Spark provides APIs for working with structured data, including:
+PySpark exposes Spark functionality through Python. A Spark DataFrame represents a distributed dataset, while transformations describe the processing to be performed.
 
-- DataFrames
-- SQL queries
-- Data transformations
-- Aggregations
-- Distributed processing
+Spark supports both batch and streaming workloads:
 
-Databricks provides a managed Spark environment and integrates it with its storage, governance, and orchestration capabilities.
+- **Batch processing:** Processes a bounded dataset.
+- **Structured Streaming:** Processes data incrementally as new input becomes available.
 
-In this project, Spark is responsible for converting application transformation results into DataFrames and writing those records to Delta tables.
+The Bronze Auto Loader POC uses Structured Streaming. Its source is configured with:
 
-The distinction between local Python processing and Spark processing is intentional:
+```python
+spark.readStream.format("cloudFiles")
+```
 
-- Python and pandas handle provider integration and domain transformations where appropriate.
-- Spark handles distributed data processing and integration with Databricks storage.
+The `cloudFiles` source identifies Auto Loader. The pipeline reads Parquet files from a Unity Catalog Volume and returns a streaming DataFrame to Lakeflow.
+
+This separates responsibilities:
+
+- Python provider integrations retrieve and prepare source data.
+- Spark processes the data using distributed DataFrame operations.
+- Auto Loader discovers and incrementally ingests files.
+- Lakeflow manages pipeline execution and the resulting table.
+
+The POC demonstrates that the application does not need to implement its own file-discovery loop, streaming checkpoint management, or Delta table write lifecycle for this ingestion path.
 
 ## 5. Lakehouse Storage and Data Management
 
 ### 5.1 Delta Lake
 
-Delta Lake is a storage layer that adds transactional and data-management capabilities to data stored in cloud object storage.
+Delta Lake is the transactional table-storage layer used by Databricks.
 
-It uses Parquet data files together with a transaction log to track table changes and provide capabilities such as:
+A Delta table consists of data files, stored in Parquet format, and a transaction log that records table changes. The transaction log provides the metadata needed to manage table versions and transactional operations.
 
-- ACID transactions
-- Schema enforcement
-- Schema evolution
-- Version history and time travel
-- Reliable concurrent reads and writes
+This is different from storing raw Parquet files in a directory:
 
-Delta tables can be queried through Spark and Databricks SQL.
+- **Parquet files:** Store columnar data but do not independently provide table-level transaction history.
+- **Delta tables:** Combine Parquet data files with a transaction log to provide transactional table behavior, schema enforcement, and table history.
 
-In this project, Delta Lake is the persistence layer for Bronze, Silver, and Gold data.
+The project uses both formats for different purposes.
+
+Raw provider-derived data is initially landed as Parquet files in a Unity Catalog Volume. Lakeflow then ingests those files into a managed Delta streaming table.
+
+The Bronze Auto Loader POC created:
+
+`workspace.market_data.bronze_poc_yahoo_market_bars`
+
+The table is managed by Lakeflow. Its data is stored in Databricks-managed storage, rather than in the raw Volume directory.
+
+`DESCRIBE HISTORY` can be used to inspect the Delta table's transaction history. The POC showed an initial streaming update that added four records, followed by another update that added two records.
+
+`DESCRIBE DETAIL` can be used to inspect Delta table metadata, including its format, storage location, size, and properties. In this POC, the command exposed an internal Lakeflow materialization/backing-table name in its output. That is an implementation detail of the pipeline, not the logical table name that application queries should depend on.
+
+Use the declared table name when querying the table:
+
+`workspace.market_data.bronze_poc_yahoo_market_bars`
+
+Delta transaction history describes changes to the table. It should not be confused with business-level observation versioning or ingestion-run history.
 
 ### 5.2 Unity Catalog
 
-Unity Catalog provides centralized governance and management of data and other securable resources in Databricks.
+Unity Catalog provides centralized governance for data and other assets in Databricks.
 
-It organizes data using a hierarchical namespace:
+Its hierarchy is:
 
-```text
-catalog.schema.table
-```
+- **Catalog**
+- **Schema**
+- **Tables, Volumes, and other securable objects**
 
-For example:
-
-```text
-workspace.market_data.bronze_yahoo_market_bars
-```
-
-This identifies:
+This project currently uses:
 
 - Catalog: `workspace`
 - Schema: `market_data`
-- Table: `bronze_yahoo_market_bars`
 
-Unity Catalog provides capabilities for:
+The catalog and schema organize the project's data objects and provide the context for permissions and access management.
 
-- Organizing data assets
-- Managing permissions
-- Discovering data
-- Tracking lineage
-- Applying governance policies
+### 5.3 Unity Catalog Volumes
 
-The project uses Unity Catalog to organize its Bronze, Silver, and Gold Delta tables.
+Unity Catalog governs more than tables. It also provides Volumes for managing access to files stored in cloud object storage.
 
-## 5.3 SQL Reference — Catalog and Table Inspection
+A Volume provides a governed file-storage location within a catalog and schema. It can be used for files such as Parquet, JSON, CSV, and other supported formats.
 
-Databricks SQL provides commands for exploring Unity Catalog objects and inspecting table definitions.
+The project uses a Volume for raw provider-derived market data:
 
-These commands are useful during development, troubleshooting, and validating that deployed tables match their expected data contracts.
+`workspace.market_data.raw_market_data`
 
-### Inspect the Current Catalog and Schema
+Its path is:
+
+`/Volumes/workspace/market_data/raw_market_data/`
+
+The historical Yahoo POC writes Parquet files beneath:
+
+`/Volumes/workspace/market_data/raw_market_data/poc/yahoo/historical/`
+
+The Volume is the raw-file landing area. It does not convert those files into tables or provide Delta transaction semantics.
+
+The distinction is:
+
+- **Volume:** Governed file storage for raw and intermediate files.
+- **Delta table:** Structured, queryable data managed through the Delta transaction log.
+
+Raw-file immutability is an application-level convention in this project. A Volume does not inherently enforce append-only behavior.
+
+### 5.4 Auto Loader and Lakeflow Spark Declarative Pipelines
+
+Auto Loader incrementally discovers and processes new files arriving in supported cloud storage locations.
+
+It is implemented through Spark's `cloudFiles` source and is designed for file-based ingestion. It is not responsible for calling external provider APIs.
+
+The project separates provider ingestion from file ingestion:
+
+1. A Python provider integration retrieves data.
+2. The integration writes provider-derived records to a Unity Catalog Volume.
+3. Auto Loader discovers new files.
+4. A Lakeflow Spark Declarative Pipeline processes the files and manages the resulting table.
+
+The initial implementation uses:
+
+`pipelines/bronze_poc.py`
+
+The pipeline declares a streaming table using the Lakeflow Python API:
+
+```python
+@dp.table
+```
+
+The function returns a streaming DataFrame sourced from Auto Loader. Lakeflow manages the pipeline execution and the lifecycle of the declared table.
+
+The POC demonstrated incremental ingestion:
+
+- Initial landing: four records, two each for AAPL and MSFT.
+- Subsequent landing: two additional records, one each for AAPL and MSFT.
+- Subsequent pipeline update: the table contained six records, with the original four retained and the two new records added.
+
+This demonstrates incremental file discovery and ingestion. It does not demonstrate business-key deduplication across separate files. Auto Loader tracks file ingestion state; it does not determine whether two different files contain the same logical market observation.
+
+The pipeline currently uses Parquet input without implementing schema evolution or a rescued-data strategy. Those capabilities remain future work.
+
+### 5.5 SQL Reference — Bronze POC Validation
+
+The following statements inspect the logical Bronze table, its contents, and its Delta metadata.
 
 ```sql
+-- Inspect the Bronze POC table definition.
+DESCRIBE TABLE workspace.market_data.bronze_poc_yahoo_market_bars;
+
+-- Summarize the ingested observations.
 SELECT
-    current_catalog(),
-    current_schema();
+    symbol,
+    provider,
+    interval,
+    COUNT(*) AS observations,
+    MIN(provider_timestamp_utc) AS first_observation,
+    MAX(provider_timestamp_utc) AS last_observation
+FROM workspace.market_data.bronze_poc_yahoo_market_bars
+GROUP BY symbol, provider, interval
+ORDER BY symbol;
+
+-- Inspect Delta table details.
+DESCRIBE DETAIL workspace.market_data.bronze_poc_yahoo_market_bars;
+
+-- Inspect Delta transaction history.
+DESCRIBE HISTORY workspace.market_data.bronze_poc_yahoo_market_bars;
 ```
 
-### List Catalogs
-
-```sql
-SHOW CATALOGS;
-```
-
-### List Schemas in a Catalog
-
-```sql
-SHOW SCHEMAS IN workspace;
-```
-
-### Describe a Schema
-
-```sql
-DESCRIBE SCHEMA workspace.market_data;
-```
-
-### List Tables in a Schema
-
-```sql
-SHOW TABLES IN workspace.market_data;
-```
-
-### Describe a Table
-
-Displays the table's columns, data types, and comments.
-
-```sql
-DESCRIBE TABLE workspace.market_data.bronze_yahoo_market_bars;
-```
-
-### Extended Table Description
-
-Displays additional table metadata, including storage information and table properties.
-
-```sql
-DESCRIBE TABLE EXTENDED workspace.market_data.bronze_yahoo_market_bars;
-```
-
-### Inspect Table Data
+Raw Parquet files can also be queried directly from the Volume without first creating a permanent table:
 
 ```sql
 SELECT *
-FROM workspace.market_data.bronze_yahoo_market_bars
-LIMIT 10;
+FROM read_files(
+    '/Volumes/workspace/market_data/raw_market_data/poc/yahoo/historical/run_id=6adf317d-19a6-43d7-9dd7-8e3190e19beb',
+    format => 'parquet'
+)
+ORDER BY symbol, provider_timestamp_utc;
 ```
 
-### Count Table Records
+The path above identifies one specific POC ingestion run. Change the `run_id` directory when inspecting another run.
 
-```sql
-SELECT COUNT(*) AS row_count
-FROM workspace.market_data.bronze_yahoo_market_bars;
-```
+The repeatable validation statements are maintained in:
 
-### Inspect Table History
+`sql/validation/bronze_poc.sql`
 
-Delta Lake maintains a transaction log that records changes to a table.
+## 6. Databricks Jobs and Lakeflow Pipelines
 
-```sql
-DESCRIBE HISTORY workspace.market_data.bronze_yahoo_market_bars;
-```
+Databricks provides multiple execution and orchestration mechanisms. They have related but distinct responsibilities.
 
-This is useful for understanding when data was written, which operations were performed, and how the table has changed over time.
+### 6.1 Databricks Jobs
 
-### Inspect Table Schema Through SQL
+Jobs execute and coordinate tasks such as notebooks, Python scripts, pipelines, and other supported workloads.
 
-```sql
-SELECT
-    column_name,
-    data_type,
-    is_nullable
-FROM workspace.information_schema.columns
-WHERE table_schema = 'market_data'
-  AND table_name = 'bronze_yahoo_market_bars'
-ORDER BY ordinal_position;
-```
+The project currently retains the `yahoo_historical_bronze` job, which runs `notebooks/02_bronze.py` using the packaged Python application wheel.
 
-Unity Catalog's `information_schema` provides queryable metadata about catalogs, schemas, tables, columns, and other objects. Access to metadata is subject to the user's permissions.
+This is the earlier application-managed ingestion path.
 
-## 6. Databricks Jobs
+### 6.2 Lakeflow Spark Declarative Pipelines
 
-A Databricks job defines and executes a workload.
+Lakeflow Spark Declarative Pipelines define and execute managed data-processing pipelines.
 
-Jobs can contain one or more tasks, with dependencies between tasks when a workflow requires multiple processing steps.
+The project has introduced the `bronze_poc` pipeline, which runs `pipelines/bronze_poc.py`.
 
-Tasks can execute notebooks, Python code, SQL, and other supported workload types.
+The pipeline uses Auto Loader to incrementally ingest Parquet files from the raw-data Volume and creates the Lakeflow-managed Bronze streaming table.
 
-A job definition includes configuration such as:
+The pipeline is configured in triggered mode and uses serverless compute.
 
-- Tasks and their dependencies
-- Execution environments
-- Parameters
-- Schedules and triggers
-- Retry behavior
-- Notifications
+### 6.3 Separation of Responsibilities
 
-This project currently defines a job named `MDP - Yahoo Historical Bronze`.
+The distinction is important:
 
-The job executes `notebooks/02_bronze.py` in a Serverless environment with the application wheel installed.
+- Jobs coordinate the execution of tasks.
+- Lakeflow pipelines define and manage data-processing pipelines and their tables.
+- Auto Loader discovers and ingests new files.
+- Delta Lake provides transactional table storage.
 
-The job can be deployed and executed through the Databricks CLI or managed through the workspace UI.
+A bundle deployment creates or updates the configured workspace resource. It does not itself execute the pipeline or populate its table. Pipeline execution is a separate operation.
 
 ## 7. Declarative Automation Bundles
 
@@ -331,7 +363,7 @@ The primary bundle operations used in this project are:
 # Validate bundle configuration
 databricks bundle validate -t dev --profile MDP
 
-# Build and deploy resources
+# Build and deploy configured resources
 databricks bundle deploy -t dev --profile MDP
 
 # Inspect deployed resources
@@ -347,15 +379,34 @@ Validation, deployment, and execution are separate operations.
 
 Deploying a bundle synchronizes its declared resources and files with the target workspace. Running a job executes the deployed workload; it does not automatically deploy uncommitted local changes.
 
+A deployment without resource selection can affect all resources declared in the bundle. During development, selective deployment can be used to limit which resources are created or updated.
+
 ### 7.4 Scope of Bundle Management
 
-Bundles manage the Databricks resources and project artifacts declared in their configuration.
+Declarative Automation Bundles manage supported Databricks workspace resources through version-controlled configuration.
 
-They do not automatically manage every resource in the Databricks workspace or replace all cloud infrastructure provisioning.
+The project currently defines both a legacy job and a Lakeflow pipeline in its bundle resources:
 
-For example, this project's Bronze Delta table was created separately through SQL and is not currently a bundle-managed resource.
+- `resources/jobs.yml`
+- `resources/pipelines.yml`
 
-Cloud infrastructure provisioning and Databricks project deployment are related but distinct responsibilities.
+The `bronze_poc` pipeline is bundle-managed. Its source code is maintained in `pipelines/bronze_poc.py`.
+
+The pipeline definition declares the logical Bronze streaming table:
+
+`workspace.market_data.bronze_poc_yahoo_market_bars`
+
+The table itself is created and updated through Lakeflow pipeline execution. It is not separately declared as a bundle-managed table resource.
+
+This distinction separates three responsibilities:
+
+- **Bundle deployment:** Creates or updates the pipeline resource and deploys its associated source files.
+- **Lakeflow execution:** Runs the pipeline and creates or updates its managed tables.
+- **Data ingestion:** Reads source files and populates the resulting tables.
+
+Deploying the bundle does not restore the table's data or execute the pipeline. Reconstructing workspace resources and repopulating data are separate operations.
+
+The project uses a global wheel artifact configuration in `databricks.yml`. As a result, even a selective pipeline deployment may still build and upload the configured Python wheel. The wheel is used by the legacy job; the current Bronze POC pipeline does not depend on it.
 
 ## 8. Python Application Packaging
 
@@ -379,6 +430,8 @@ dist/market_data_platform_databricks-0.1.0-py3-none-any.whl
 
 The bundle configuration builds this wheel during deployment and makes it available to the Databricks job environment.
 
+The wheel remains relevant to the legacy application-managed job and future Python application workloads. The current Auto Loader POC uses a Lakeflow pipeline definition and does not require the wheel for its ingestion logic.
+
 ### 8.2 Local Development vs. Databricks Runtime
 
 The project deliberately separates local development from Databricks execution.
@@ -386,29 +439,52 @@ The project deliberately separates local development from Databricks execution.
 | Local environment | Databricks environment |
 |---|---|
 | Python 3.12 | Managed Python runtime |
-| uv dependency management | Job environment dependencies |
+| uv dependency management | Databricks-managed runtime and workload dependencies |
 | pytest | Databricks job execution and integration validation |
-| pandas transformations | Spark processing |
-| Local Python package | Installed application wheel |
-| Local development tools | Managed Serverless compute |
+| pandas and local Python logic | Spark DataFrames and distributed processing where appropriate |
+| Local Python package | Installed application wheel for workloads that require it |
+| Local development tools | Managed serverless compute |
 
 This allows domain logic to be developed and tested locally while using Databricks for platform-specific execution and storage.
 
 ## 9. Project Development Workflow
 
-The current development workflow is:
+### 9.1 Lakeflow Pipeline Development and Execution
 
-1. Develop application code locally in VS Code.
-2. Manage dependencies with uv.
-3. Validate code with Ruff and pytest.
-4. Build the Python wheel.
-5. Validate the Databricks bundle.
-6. Deploy the bundle to the development workspace.
-7. Execute jobs in Databricks.
-8. Inspect results through the workspace UI and SQL.
-9. Update tests, documentation, and implementation decisions as needed.
+The Bronze Auto Loader POC introduced a pipeline-based development workflow.
 
-The Makefile provides convenience commands for common operations without hiding the underlying tools.
+The workflow is:
+
+1. Implement the pipeline definition in `pipelines/bronze_poc.py`.
+2. Define the pipeline resource in `resources/pipelines.yml`.
+3. Validate the bundle configuration.
+4. Deploy the specific pipeline resource.
+5. Trigger the pipeline in Databricks.
+6. Inspect the resulting table through Databricks SQL.
+7. Verify incremental behavior by landing additional files and running the pipeline again.
+
+The pipeline can be selectively deployed:
+
+```bash
+databricks bundle deploy \
+    --select pipelines.bronze_poc \
+    -t dev \
+    --profile MDP
+```
+
+The deployment and execution steps are separate. A successful deployment confirms that the pipeline resource and its associated source files have been deployed; it does not confirm that the pipeline has run successfully or ingested data.
+
+### 9.2 Validation and Testing
+
+The project uses different validation approaches for different layers:
+
+- **Local Python validation:** pytest and Ruff validate application code and project conventions.
+- **Bundle validation:** `databricks bundle validate` checks the bundle configuration.
+- **Pipeline validation:** A triggered pipeline run verifies that the deployed pipeline can execute.
+- **Data validation:** Databricks SQL queries inspect the resulting table and its contents.
+- **Incremental-ingestion validation:** Additional raw files are landed and the pipeline is run again to verify that new records are ingested without re-ingesting previously processed files.
+
+These checks provide evidence at different levels. Passing local tests does not establish that a deployed pipeline works, and a successful pipeline run does not by itself establish business-level data quality.
 
 ## 10. References
 
@@ -417,3 +493,5 @@ The Makefile provides convenience commands for common operations without hiding 
 - [Apache Spark Documentation](https://spark.apache.org/docs/latest/)
 - [Delta Lake Documentation](https://docs.delta.io/)
 - [Unity Catalog Documentation](https://docs.databricks.com/aws/en/data-governance/unity-catalog/)
+- [Auto Loader](https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/auto-loader/)
+- [Lakeflow Spark Declarative Pipelines](https://docs.databricks.com/aws/en/ldp/)

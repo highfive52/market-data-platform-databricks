@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -127,3 +128,32 @@ def test_rejects_fractional_volume():
 
     with pytest.raises(ValueError, match="Expected an integer"):
         transform(history)
+
+
+def test_preserves_original_yahoo_record():
+    history = make_history("2026-11-13 09:30:00")
+
+    # Include an extra provider field to verify we preserve
+    # fields that aren't part of our structured Bronze schema.
+    history["Extra Field"] = "provider-value"
+
+    records = transform(history)
+
+    raw_record = json.loads(records[0]["raw_record"])
+
+    assert raw_record["Open"] == history.iloc[0]["Open"]
+    assert raw_record["Adj Close"] == history.iloc[0]["Adj Close"]
+    assert raw_record["Volume"] == history.iloc[0]["Volume"]
+    assert raw_record["Extra Field"] == "provider-value"
+
+
+def test_raw_record_preserves_missing_values_as_json_null():
+    history = make_history("2026-11-13 09:30:00")
+    history.loc[:, "Open"] = float("nan")
+
+    records = transform(history)
+
+    raw_record = json.loads(records[0]["raw_record"])
+
+    assert raw_record["Open"] is None
+    assert records[0]["open"] is None

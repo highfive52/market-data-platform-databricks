@@ -1,2 +1,13 @@
 resources:
-  pipelines: {}
+  pipelines:
+    bronze_poc:
+      name: MDP - Bronze Auto Loader POC
+
+      catalog: workspace
+      schema: market_data
+
+      serverless: true
+
+      libraries:
+        - file:
+            path: ../pipelines/bronze_poc.py

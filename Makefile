@@ -3,6 +3,7 @@ TARGET ?= dev
 
 .PHONY: validate deploy summary wheel test lint
 
+# Databricks bundle commands
 validate:
 	databricks bundle validate -t $(TARGET) --profile $(PROFILE)
 
@@ -12,6 +13,7 @@ deploy: validate
 summary:
 	databricks bundle summary -t $(TARGET) --profile $(PROFILE)
 
+# Python build commands
 wheel:
 	uv build --wheel
 

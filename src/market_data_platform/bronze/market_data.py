@@ -52,6 +52,29 @@ def _hash_value(value: Any) -> Any:
     return value
 
 
+def _raw_record(row: pd.Series) -> str:
+    """Serialize an original provider row as standard JSON."""
+    raw_values = {}
+
+    for key, value in row.items():
+        if pd.isna(value):
+            raw_values[str(key)] = None
+            continue
+
+        # Convert NumPy scalar types into native Python types.
+        if hasattr(value, "item"):
+            value = value.item()
+
+        raw_values[str(key)] = _hash_value(value)
+
+    return json.dumps(
+        raw_values,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
 def transform_yahoo_history(
     history: pd.DataFrame,
     *,
@@ -102,6 +125,8 @@ def transform_yahoo_history(
             timestamp.to_pydatetime().astimezone(timezone.utc).replace(tzinfo=None)
         )
 
+        raw_record = _raw_record(row)
+
         values = {
             "open": _nullable_number(row["Open"]),
             "high": _nullable_number(row["High"]),
@@ -128,6 +153,7 @@ def transform_yahoo_history(
                 "provider_timestamp_utc": provider_timestamp_utc,
                 "bar_date": date.fromisoformat(provider_timestamp_utc.date().isoformat()),
                 **values,
+                "raw_record": raw_record,
                 "observation_hash": observation_hash,
                 "is_current": True,
                 "ingestion_run_id": ingestion_run_id,

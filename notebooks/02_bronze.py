@@ -112,6 +112,7 @@ bronze_schema = StructType(
         StructField("volume", LongType(), True),
         StructField("dividends", DoubleType(), True),
         StructField("stock_splits", DoubleType(), True),
+        StructField("raw_record", StringType(), False),
         StructField("observation_hash", StringType(), False),
         StructField("is_current", BooleanType(), False),
         StructField("ingestion_run_id", StringType(), False),
